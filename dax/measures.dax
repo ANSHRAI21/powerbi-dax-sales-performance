@@ -1,0 +1,222 @@
+// =====================================================================
+//  ASSIGNMENT 2 — SALES DATA  |  DAX answers (Q1 – Q10)
+//  Author: Ansh Rai
+// =====================================================================
+//
+//  DATA MODEL
+//   Fact : 'Sales Orders' (18,000 lines, 12,180 orders, 2014-01-01 → 2018-05-25)
+//   Customers[Customer Index]      1 ─── * 'Sales Orders'[Customer Name Index]
+//   Products[Index]                1 ─── * 'Sales Orders'[Product Index]
+//   Regions[id]                    1 ─── * 'Sales Orders'[Sales Region Index]
+//   'State Regions'[State Code]    1 ─── * Regions[state_code]
+//   'Date'[Date]                   1 ─── * 'Sales Orders'[OrderDate]
+//   'KPI Selector'                 (disconnected — used for Q10)
+//
+//  POWER QUERY CLEAN-UP
+//   * State Regions -> "Use First Row as Headers" (headers sit in row 1)
+//   * Sales Orders  -> rename Column1 to County (optional)
+//   * Unit Price, Total Unit Cost = Decimal; OrderDate = Date
+//
+//  Assumptions
+//   * Sales = Order Quantity × Unit Price
+//   * Cost  = Order Quantity × Total Unit Cost (cost is per unit)
+//   * The data has no Category column, so Brands (Accord / Cixin / Fullerton)
+//     is used as the product category in Q6.
+// =====================================================================
+
+
+// ---------- DATE TABLE (Modeling > New table, then Mark as date table)
+Date =
+ADDCOLUMNS (
+    CALENDAR ( DATE ( 2014, 1, 1 ), DATE ( 2018, 12, 31 ) ),
+    "Year",       YEAR ( [Date] ),
+    "Month No",   MONTH ( [Date] ),
+    "Month",      FORMAT ( [Date], "MMM" ),
+    "Year-Month", FORMAT ( [Date], "YYYY-MM" ),
+    "Quarter",    "Q" & QUARTER ( [Date] )
+)
+
+
+// =====================================================================
+// Q1. BASIC KPIs
+// =====================================================================
+Total Sales =
+SUMX ( 'Sales Orders', 'Sales Orders'[Order Quantity] * 'Sales Orders'[Unit Price] )
+
+Total Cost =
+SUMX ( 'Sales Orders', 'Sales Orders'[Order Quantity] * 'Sales Orders'[Total Unit Cost] )
+
+Total Profit = [Total Sales] - [Total Cost]
+
+Total Quantity = SUM ( 'Sales Orders'[Order Quantity] )
+
+Total Orders = DISTINCTCOUNT ( 'Sales Orders'[OrderNumber] )
+
+Profit Margin % = DIVIDE ( [Total Profit], [Total Sales] )          // format as %
+
+Average Order Value = DIVIDE ( [Total Sales], [Total Orders] )
+
+
+// =====================================================================
+// Q2. YEAR-TO-DATE SALES
+// =====================================================================
+YTD Sales = TOTALYTD ( [Total Sales], 'Date'[Date] )
+
+
+// =====================================================================
+// Q3. PREVIOUS YEAR SALES
+// =====================================================================
+PY Sales = CALCULATE ( [Total Sales], SAMEPERIODLASTYEAR ( 'Date'[Date] ) )
+
+
+// =====================================================================
+// Q4. YEAR-OVER-YEAR SALES GROWTH %
+// =====================================================================
+YoY Sales Growth % =
+VAR CurrentSales = [Total Sales]
+VAR PrevSales    = [PY Sales]
+RETURN
+    IF ( NOT ISBLANK ( PrevSales ), DIVIDE ( CurrentSales - PrevSales, PrevSales ) )
+
+
+// =====================================================================
+// Q5. RUNNING TOTAL SALES OVER TIME
+// =====================================================================
+Running Total Sales =
+VAR LastVisibleDate = MAX ( 'Date'[Date] )
+RETURN
+    CALCULATE (
+        [Total Sales],
+        FILTER ( ALL ( 'Date'[Date] ), 'Date'[Date] <= LastVisibleDate )
+    )
+
+
+// =====================================================================
+// Q6. PRODUCT RANK BY TOTAL SALES
+// =====================================================================
+Product Sales Rank =
+IF (
+    HASONEVALUE ( Products[Product Name] ),
+    RANKX ( ALL ( Products[Product Name] ), [Total Sales], , DESC, DENSE )
+)
+
+
+// =====================================================================
+// Q7. CATEGORY (BRAND) CONTRIBUTION TO TOTAL SALES
+// =====================================================================
+Category Contribution % =
+DIVIDE (
+    [Total Sales],
+    CALCULATE ( [Total Sales], ALL ( 'Sales Orders'[Brands] ) )
+)
+
+
+// =====================================================================
+// Q8. TOP 5 vs OTHERS (products)
+// =====================================================================
+// Option A — calculated columns on Products (usable in slicers/legends)
+Product Sales =
+SUMX (
+    RELATEDTABLE ( 'Sales Orders' ),
+    'Sales Orders'[Order Quantity] * 'Sales Orders'[Unit Price]
+)
+
+Sales Rank = RANKX ( Products, Products[Product Sales], , DESC, DENSE )
+
+Product Group = IF ( Products[Sales Rank] <= 5, "Top 5", "Others" )
+
+// Option B — measure (reacts to slicers such as Year / Region)
+Product Group (Dynamic) =
+IF (
+    HASONEVALUE ( Products[Product Name] ),
+    IF ( [Product Sales Rank] <= 5, "Top 5", "Others" )
+)
+
+
+// =====================================================================
+// Q9. CUSTOMER VALUE SEGMENT
+//     Thresholds (own choice, based on the spread of customer sales,
+//     median ≈ 1.9 M):  High ≥ 2.5 M | Medium 1.5 M – 2.5 M | Low < 1.5 M
+// =====================================================================
+// Calculated columns on Customers
+Customer Sales =
+SUMX (
+    RELATEDTABLE ( 'Sales Orders' ),
+    'Sales Orders'[Order Quantity] * 'Sales Orders'[Unit Price]
+)
+
+Customer Segment =
+SWITCH (
+    TRUE (),
+    Customers[Customer Sales] >= 2500000, "High Value",
+    Customers[Customer Sales] >= 1500000, "Medium Value",
+    "Low Value"
+)
+
+// Measure version (dynamic with filters)
+Customer Segment (Dynamic) =
+VAR CustSales = [Total Sales]
+RETURN
+    IF (
+        HASONEVALUE ( Customers[Customer Names] ),
+        SWITCH (
+            TRUE (),
+            CustSales >= 2500000, "High Value",
+            CustSales >= 1500000, "Medium Value",
+            "Low Value"
+        )
+    )
+
+
+// =====================================================================
+// Q10. DYNAMIC KPI SWITCH (slicer-driven)
+// =====================================================================
+// Step 1 — disconnected table (Modeling > New table)
+KPI Selector =
+DATATABLE (
+    "KPI", STRING,
+    "Sort", INTEGER,
+    {
+        { "Sales",    1 },
+        { "Profit",   2 },
+        { "Quantity", 3 },
+        { "Orders",   4 }
+    }
+)
+// Sort 'KPI Selector'[KPI] by [Sort]; add a single-select slicer on [KPI]
+
+// Step 2 — the switching measure (use it in charts/cards)
+Selected KPI =
+VAR Choice = SELECTEDVALUE ( 'KPI Selector'[KPI], "Sales" )
+RETURN
+    SWITCH (
+        Choice,
+        "Sales",    [Total Sales],
+        "Profit",   [Total Profit],
+        "Quantity", [Total Quantity],
+        "Orders",   [Total Orders]
+    )
+
+// Step 3 — dynamic chart title (Format > Title > fx > Field value)
+Selected KPI Title =
+SELECTEDVALUE ( 'KPI Selector'[KPI], "Sales" ) & " by Month"
+
+
+// =====================================================================
+//  EXPECTED VALUES (no filters) — to check your report
+//   Total Sales            346,272,113.50
+//   Total Profit           130,244,001.78
+//   Total Quantity         151,884
+//   Total Orders           12,180
+//   Profit Margin %        37.61 %
+//   Average Order Value    28,429.57
+//   Sales by year          2014 78.44M · 2015 76.48M · 2016 78.41M
+//                          2017 80.44M · 2018 32.51M (data ends 25-May-2018)
+//   YoY %                  2015 -2.49% · 2016 +2.52% · 2017 +2.59% · 2018 -59.59%*
+//   Brand contribution     Fullerton 50.00% · Accord 27.89% · Cixin 22.11%
+//   Top 5 products         Product 26, 25, 13, 15, 14
+//   Customer segments      High 34 · Medium 101 · Low 40  (175 customers)
+//
+//  * 2018 is a partial year, so YoY vs full 2017 looks like a drop.
+//    Like-for-like (Jan 1 – May 25): 32.51M vs 32.55M = -0.14 %.
+// =====================================================================

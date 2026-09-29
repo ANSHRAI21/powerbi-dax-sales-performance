@@ -1,0 +1,228 @@
+createOrReplace
+
+	table Date
+		dataCategory: Time
+
+		column Date
+			dataType: dateTime
+			isKey
+			formatString: dd-mm-yyyy
+			isNameInferred
+			sourceColumn: [Date]
+
+		column Year
+			dataType: int64
+			formatString: 0
+			isNameInferred
+			sourceColumn: [Year]
+
+		column 'Month No'
+			dataType: int64
+			formatString: 0
+			isNameInferred
+			sourceColumn: [Month No]
+
+		column Month
+			dataType: string
+			isNameInferred
+			sourceColumn: [Month]
+			sortByColumn: 'Month No'
+
+		column 'Year-Month'
+			dataType: string
+			isNameInferred
+			sourceColumn: [Year-Month]
+
+		column Quarter
+			dataType: string
+			isNameInferred
+			sourceColumn: [Quarter]
+
+		partition Date = calculated
+			mode: import
+			source = ```
+					ADDCOLUMNS (
+					    CALENDAR ( DATE ( 2014, 1, 1 ), DATE ( 2018, 12, 31 ) ),
+					    "Year", YEAR ( [Date] ),
+					    "Month No", MONTH ( [Date] ),
+					    "Month", FORMAT ( [Date], "MMM" ),
+					    "Year-Month", FORMAT ( [Date], "YYYY-MM" ),
+					    "Quarter", "Q" & QUARTER ( [Date] )
+					)
+					```
+
+	table 'KPI Selector'
+
+		column KPI
+			dataType: string
+			isNameInferred
+			sourceColumn: [KPI]
+			sortByColumn: Sort
+
+		column Sort
+			dataType: int64
+			formatString: 0
+			isNameInferred
+			sourceColumn: [Sort]
+
+		partition 'KPI Selector' = calculated
+			mode: import
+			source = ```
+					DATATABLE (
+					    "KPI", STRING,
+					    "Sort", INTEGER,
+					    { { "Sales", 1 }, { "Profit", 2 }, { "Quantity", 3 }, { "Orders", 4 } }
+					)
+					```
+
+	relationship rel_Products
+		fromColumn: 'Sales Orders'.'Product Index'
+		toColumn: Products.Index
+
+	relationship rel_Regions
+		fromColumn: 'Sales Orders'.'Sales Region Index'
+		toColumn: Regions.id
+
+	relationship rel_Date
+		fromColumn: 'Sales Orders'.OrderDate
+		toColumn: Date.Date
+
+	ref table 'Sales Orders'
+
+		measure 'Total Sales' = SUMX ( 'Sales Orders', 'Sales Orders'[Order Quantity] * 'Sales Orders'[Unit Price] )
+			formatString: #,0.00
+			displayFolder: Q1 Basic KPIs
+
+		measure 'Total Cost' = SUMX ( 'Sales Orders', 'Sales Orders'[Order Quantity] * 'Sales Orders'[Total Unit Cost] )
+			formatString: #,0.00
+			displayFolder: Q1 Basic KPIs
+
+		measure 'Total Profit' = [Total Sales] - [Total Cost]
+			formatString: #,0.00
+			displayFolder: Q1 Basic KPIs
+
+		measure 'Total Quantity' = SUM ( 'Sales Orders'[Order Quantity] )
+			formatString: #,0
+			displayFolder: Q1 Basic KPIs
+
+		measure 'Total Orders' = DISTINCTCOUNT ( 'Sales Orders'[OrderNumber] )
+			formatString: #,0
+			displayFolder: Q1 Basic KPIs
+
+		measure 'Profit Margin %' = DIVIDE ( [Total Profit], [Total Sales] )
+			formatString: 0.00%
+			displayFolder: Q1 Basic KPIs
+
+		measure 'Average Order Value' = DIVIDE ( [Total Sales], [Total Orders] )
+			formatString: #,0.00
+			displayFolder: Q1 Basic KPIs
+
+		measure 'YTD Sales' = TOTALYTD ( [Total Sales], 'Date'[Date] )
+			formatString: #,0.00
+			displayFolder: Q2-Q5 Time Intelligence
+
+		measure 'PY Sales' = CALCULATE ( [Total Sales], SAMEPERIODLASTYEAR ( 'Date'[Date] ) )
+			formatString: #,0.00
+			displayFolder: Q2-Q5 Time Intelligence
+
+		measure 'YoY Sales Growth %' = ```
+				VAR CurrentSales = [Total Sales]
+				VAR PrevSales = [PY Sales]
+				RETURN
+				    IF ( NOT ISBLANK ( PrevSales ), DIVIDE ( CurrentSales - PrevSales, PrevSales ) )
+				```
+			formatString: 0.00%
+			displayFolder: Q2-Q5 Time Intelligence
+
+		measure 'Running Total Sales' = ```
+				VAR LastVisibleDate = MAX ( 'Date'[Date] )
+				RETURN
+				    CALCULATE (
+				        [Total Sales],
+				        FILTER ( ALL ( 'Date'[Date] ), 'Date'[Date] <= LastVisibleDate )
+				    )
+				```
+			formatString: #,0.00
+			displayFolder: Q2-Q5 Time Intelligence
+
+		measure 'Product Sales Rank' = ```
+				IF (
+				    HASONEVALUE ( Products[Product Name] ),
+				    RANKX ( ALL ( Products[Product Name] ), [Total Sales], , DESC, DENSE )
+				)
+				```
+			formatString: 0
+			displayFolder: Q6-Q9 Ranking & Segments
+
+		measure 'Category Contribution %' = DIVIDE ( [Total Sales], CALCULATE ( [Total Sales], ALL ( 'Sales Orders'[Brands] ) ) )
+			formatString: 0.00%
+			displayFolder: Q6-Q9 Ranking & Segments
+
+		measure 'Product Group (Dynamic)' = ```
+				IF (
+				    HASONEVALUE ( Products[Product Name] ),
+				    IF ( [Product Sales Rank] <= 5, "Top 5", "Others" )
+				)
+				```
+			displayFolder: Q6-Q9 Ranking & Segments
+
+		measure 'Customer Segment (Dynamic)' = ```
+				VAR CustSales = [Total Sales]
+				RETURN
+				    IF (
+				        HASONEVALUE ( Customers[Customer Names] ),
+				        SWITCH (
+				            TRUE (),
+				            CustSales >= 2500000, "High Value",
+				            CustSales >= 1500000, "Medium Value",
+				            "Low Value"
+				        )
+				    )
+				```
+			displayFolder: Q6-Q9 Ranking & Segments
+
+		measure 'Selected KPI' = ```
+				VAR Choice = SELECTEDVALUE ( 'KPI Selector'[KPI], "Sales" )
+				RETURN
+				    SWITCH (
+				        Choice,
+				        "Sales", [Total Sales],
+				        "Profit", [Total Profit],
+				        "Quantity", [Total Quantity],
+				        "Orders", [Total Orders]
+				    )
+				```
+			formatString: #,0
+			displayFolder: Q10 Dynamic KPI
+
+		measure 'Selected KPI Title' = SELECTEDVALUE ( 'KPI Selector'[KPI], "Sales" ) & " by Month"
+			displayFolder: Q10 Dynamic KPI
+
+	ref table Products
+
+		column 'Product Sales' = SUMX ( RELATEDTABLE ( 'Sales Orders' ), 'Sales Orders'[Order Quantity] * 'Sales Orders'[Unit Price] )
+			dataType: double
+			formatString: #,0.00
+
+		column 'Sales Rank' = RANKX ( Products, Products[Product Sales], , DESC, DENSE )
+			dataType: int64
+			formatString: 0
+
+		column 'Product Group' = IF ( Products[Sales Rank] <= 5, "Top 5", "Others" )
+			dataType: string
+
+	ref table Customers
+
+		column 'Customer Sales' = SUMX ( RELATEDTABLE ( 'Sales Orders' ), 'Sales Orders'[Order Quantity] * 'Sales Orders'[Unit Price] )
+			dataType: double
+			formatString: #,0.00
+
+		column 'Customer Segment' = ```
+				SWITCH (
+				    TRUE (),
+				    Customers[Customer Sales] >= 2500000, "High Value",
+				    Customers[Customer Sales] >= 1500000, "Medium Value",
+				    "Low Value"
+				)
+				```
+			dataType: string
